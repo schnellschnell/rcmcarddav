@@ -85,14 +85,21 @@ class carddav_backend extends rcube_addressbook
 			// the two kind attributes should not occur both in the same vcard
 			//'KIND' => 'kind',   // VCard v4
 			'X-ADDRESSBOOKSERVER-KIND' => 'kind', // Apple Addressbook extension
+
 		),
 		'multi' => array(
 			'EMAIL' => 'email',
 			'TEL' => 'phone',
 			'URL' => 'website',
+			'IMPP' => 'im',
 		),
 	);
 
+	// Mapping for IM addresses
+  private $immap = array('X-JABBER' => 'jabber', 'X-ICQ' => 'icq', 'X-MSN' => 'msn', 'X-AIM' => 'aim', 'X-YAHOO' => 'yahoo', 'X-SKYPE' => 'skype', 'X-SKYPE-USERNAME' => 'skype');
+	private $revImMap;
+	private $imServiceTag = array('jabber' => 'xmpp');
+	private $revImServiceTag;
 	// array with list of potential date fields for formatting
 	private $datefields = array('birthday', 'anniversary');
 
@@ -118,6 +125,7 @@ class carddav_backend extends rcube_addressbook
 		'firstname'    => array('type' => 'text', 'size' => 19, 'maxlength' => 50, 'limit' => 1, 'label' => rcube_label('firstname'), 'category' => 'main'),
 		'surname'      => array('type' => 'text', 'size' => 19, 'maxlength' => 50, 'limit' => 1, 'label' => rcube_label('surname'), 'category' => 'main'),
 		'email'        => array('type' => 'text', 'size' => 40, 'maxlength' => 50, 'label' => rcube_label('email'), 'subtypes' => array('home','work','other','internet'), 'category' => 'main'),
+		'im'           => array('type' => 'text', 'size' => 40, 'label' => rcube_label('instantmessenger'), 'subtypes' => array('jabber', 'icq', 'msn', 'aim', 'yahoo', 'skype', 'other'), 'category' => 'main'),
 		'middlename'   => array('type' => 'text', 'size' => 19, 'maxlength' => 50, 'limit' => 1, 'label' => rcube_label('middlename'), 'category' => 'main'),
 		'prefix'       => array('type' => 'text', 'size' => 8,  'maxlength' => 20, 'limit' => 1, 'label' => rcube_label('nameprefix'), 'category' => 'main'),
 		'suffix'       => array('type' => 'text', 'size' => 8,  'maxlength' => 20, 'limit' => 1, 'label' => rcube_label('namesuffix'), 'category' => 'main'),
@@ -144,6 +152,8 @@ class carddav_backend extends rcube_addressbook
 		// TODO: define fields for vcards like GEO, KEY
 	); /* }}} */
 	$this->addextrasubtypes();
+	$this->revImMap = array_flip($this->immap);
+	$this->revImServiceTag = array_flip($this->imServiceTag);
 	}}}
 
 	/**
@@ -1298,13 +1308,29 @@ EOF
 
 		foreach ($stmap as $rcqkey => $subtype){
 			if(array_key_exists($rcqkey, $save_data)) {
-			$avalues = is_array($save_data[$rcqkey]) ? $save_data[$rcqkey] : array($save_data[$rcqkey]);
-			foreach($avalues as $evalue) {
-				if (strlen($evalue) > 0){
-					$prop = $vcf->add($vkey, $evalue);
-					$this->set_attr_label($vcf, $prop, $rckey, $subtype); // set label
+				$avalues = is_array($save_data[$rcqkey]) ? $save_data[$rcqkey] : array($save_data[$rcqkey]);
+				foreach($avalues as $evalue) {
+					if (strlen($evalue) > 0){
+						if ($vkey == "IMPP"){
+							$xservicetype = $subtype;
+							$impptype = $subtype;
+							if (isset($this->imServiceTag[$subtype])){
+								$impptype = $this->imServiceTag[$subtype];
+							}
+							if (isset($this->revImMap[$impptype])){
+								// backwrad compat. with X-JABBER et al
+								$vcf->add($this->revImMap[$impptype], $evalue);
+							}
+							$evalue = strtolower($impptype).":$evalue";
+						}
+						$prop = $vcf->add($vkey, $evalue);
+						if ($vkey == "IMPP"){
+							$prop["X-SERVICE-TYPE"] = $xservicetype;
+						}
+						$this->set_attr_label($vcf, $prop, $rckey, $subtype); // set label
+					}
 				}
-			}}
+			}
 		}
 	}
 
@@ -1342,6 +1368,10 @@ EOF
 	{{{
 		$group = $pvalue->group;
 
+		if ($attrname == "im"){
+			// TODO: handle Work, Private, etc.
+			return true;
+		}
 		// X-ABLabel?
 		if(in_array($newlabel, $this->xlabels[$attrname])) {
 			if(!$group) {
@@ -1536,13 +1566,56 @@ EOF
 		}
 	}
 
+	foreach ($this->immap as $tag => $type){
+		$property = $vcf->{$tag};
+		if ($property !== null){
+			foreach ($property as $property_instance){
+				$p = $property_instance->getParts();
+				$save_data['im:'.$type][] = $p[0];
+			}
+		}
+	}
+
 	foreach ($this->vcf2rc['multi'] as $key => $value){
 		$property = $vcf->{$key};
 		if ($property !== null) {
 			foreach ($property as $property_instance){
 				$p = $property_instance->getParts();
 				$label = $this->get_attr_label($vcf, $property_instance, $value);
-				$save_data[$value.':'.$label][] = $p[0];
+				if (strtolower($value) == "im"){
+					$label = "other";
+					if (isset($property_instance["X-SERVICE-TYPE"])){
+						$label = (string)$property_instance["X-SERVICE-TYPE"];
+					}
+					preg_match("/^([^:]*):?(.*)$/", $p[0], $match);
+					if (strlen($match[1]) == 0){
+						$match[1] = "other";
+					}
+					if (array_key_exists($match[1], $this->revImServiceTag)){
+						$match[1] = $revImServiceTag[$match[1]];
+					}
+					$p[0] = $match[2];
+
+					if (!isset($this->revImMap[$label])){
+						// keep whatever $match[1] is here
+						$label = $match[1];
+					}
+				}
+				$addEntry = true;
+				write_log("carddav", var_export($save_data, true));
+				write_log("carddav", "$value:$label");
+				//if (array_key_exists($value.':'.$label, $save_data)){
+					$a = $save_data[$value.':'.$label];
+				write_log("carddav", var_export($a, true));
+					if (is_array($a)){
+						if (array_key_exists($p[0], array_flip($a))){
+							$addEntry = false;
+						}
+					}
+				//}
+				if ($addEntry){
+					$save_data[$value.':'.$label][] = $p[0];
+				}
 			}
 		}
 	}
