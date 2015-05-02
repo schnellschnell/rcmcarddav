@@ -24,5 +24,8 @@ to run your web server, e.g.:
 7. Add `carddav' to the $rcmail_config['plugins'] array in
 roundcubemail/config/main.inc.php
 
-8. Login to Roundcube and set-up your first CardDAV address book by accessing
+8. Set up your DB, for example MySQL:
+	mysql -u roundcube -p roundcubemail < roundcubemail/plugins/carddav/dbinit/mysql.sql
+
+9. Login to Roundcube and set-up your first CardDAV address book by accessing
 'Settings -> Settings -> CardDAV'
